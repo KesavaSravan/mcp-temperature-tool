@@ -1,30 +1,18 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import Dict, Any, List
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+from typing import Dict, Any
 
-# Initialize FastAPI application
 app = FastAPI(
     title="MCP Temperature Server",
-    description="A simple Model Context Protocol (MCP) tool running via FastAPI.",
+    description="Simple MCP server using FastAPI",
     version="1.0.0"
 )
 
-# ==========================================
-# Pydantic Schemas for Request Validation
-# ==========================================
-
-class RunToolRequest(BaseModel):
-    tool: str = Field(..., description="The name of the MCP tool to run.")
-    input: Dict[str, Any] = Field(..., description="The input arguments for the tool.")
-
-# ==========================================
-# Tool Logic & Data
-# ==========================================
+# -----------------------------
+# Temperature logic
+# -----------------------------
 
 def get_simulated_temperature(city: str) -> str:
-    """
-    Simulates fetching temperature data for a given city.
-    """
     mock_data = {
         "hyderabad": "32°C",
         "london": "15°C",
@@ -36,77 +24,87 @@ def get_simulated_temperature(city: str) -> str:
     }
     return mock_data.get(city.strip().lower(), "20°C")
 
-# MCP Tool Definition
-GET_TEMPERATURE_TOOL = {
+
+# -----------------------------
+# MCP Tool definition
+# -----------------------------
+
+TOOL = {
     "name": "get_temperature",
     "description": "Get the current temperature of a city",
     "inputSchema": {
         "type": "object",
         "properties": {
             "city": {
-                "type": "string",
-                "description": "City name"
+                "type": "string"
             }
         },
         "required": ["city"]
     }
 }
 
-# ==========================================
-# API Endpoints
-# ==========================================
 
-@app.get("/", tags=["System"])
-async def root():
-    """
-    Base URL returning service status and available endpoints.
-    """
+# -----------------------------
+# Health endpoint
+# -----------------------------
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+# -----------------------------
+# MCP JSON-RPC Endpoint
+# -----------------------------
+
+@app.post("/")
+async def mcp_rpc(request: Request):
+
+    body = await request.json()
+
+    method = body.get("method")
+    req_id = body.get("id")
+
+    # Tool discovery
+    if method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "tools": [TOOL]
+            }
+        }
+
+    # Tool execution
+    if method == "tools/call":
+
+        params = body.get("params", {})
+        name = params.get("name")
+        arguments = params.get("arguments", {})
+
+        if name == "get_temperature":
+
+            city = arguments.get("city")
+            temp = get_simulated_temperature(city)
+
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"The temperature in {city} is {temp}"
+                        }
+                    ]
+                }
+            }
+
     return {
-        "service": "MCP Temperature Server",
-        "status": "running",
-        "endpoints": [
-            "/health",
-            "/mcp/tools",
-            "/mcp/run"
-        ]
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {
+            "code": -32601,
+            "message": "Method not found"
+        }
     }
-
-@app.get("/health", tags=["System"])
-async def health_check():
-    """
-    Returns the server status.
-    """
-    return {
-        "status": "ok",
-        "message": "MCP Server is running properly."
-    }
-
-@app.get("/mcp/tools", tags=["MCP"])
-async def list_tools():
-    """
-    Returns the list of available MCP tools exposed by this server.
-    """
-    return {"tools": [GET_TEMPERATURE_TOOL]}
-
-@app.post("/mcp/run", tags=["MCP"])
-async def run_tool(request: RunToolRequest):
-    """
-    Runs an MCP tool with the provided input.
-    """
-    if request.tool != "get_temperature":
-        raise HTTPException(status_code=404, detail=f"Tool '{request.tool}' not found.")
-    
-    city = request.input.get("city")
-    if not city:
-        raise HTTPException(status_code=400, detail="Missing required input: 'city'")
-    
-    temperature = get_simulated_temperature(city)
-    
-    return {
-        "city": city,
-        "temperature": temperature
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
