@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict
 
 app = FastAPI(
     title="MCP Temperature Server",
@@ -8,9 +7,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# -----------------------------
-# Temperature logic
-# -----------------------------
+# ==========================================
+# Temperature Logic
+# ==========================================
 
 def get_simulated_temperature(city: str) -> str:
     mock_data = {
@@ -22,21 +21,26 @@ def get_simulated_temperature(city: str) -> str:
         "paris": "16°C",
         "delhi": "30°C"
     }
+
+    if not city:
+        return "Unknown"
+
     return mock_data.get(city.strip().lower(), "20°C")
 
 
-# -----------------------------
-# MCP Tool definition
-# -----------------------------
+# ==========================================
+# MCP Tool Definition
+# ==========================================
 
-TOOL = {
+TEMPERATURE_TOOL = {
     "name": "get_temperature",
     "description": "Get the current temperature of a city",
     "inputSchema": {
         "type": "object",
         "properties": {
             "city": {
-                "type": "string"
+                "type": "string",
+                "description": "Name of the city"
             }
         },
         "required": ["city"]
@@ -44,67 +48,122 @@ TOOL = {
 }
 
 
-# -----------------------------
-# Health endpoint
-# -----------------------------
+# ==========================================
+# Health Endpoint
+# ==========================================
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "temperature-mcp"
+    }
 
 
-# -----------------------------
+# ==========================================
 # MCP JSON-RPC Endpoint
-# -----------------------------
+# ==========================================
 
 @app.post("/")
 async def mcp_rpc(request: Request):
 
-    body = await request.json()
+    body: Dict = await request.json()
 
     method = body.get("method")
-    req_id = body.get("id")
+    request_id = body.get("id")
 
-    # Tool discovery
-    if method == "tools/list":
+    # --------------------------
+    # MCP Initialization
+    # --------------------------
+    if method == "initialize":
+
         return {
             "jsonrpc": "2.0",
-            "id": req_id,
+            "id": request_id,
             "result": {
-                "tools": [TOOL]
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "serverInfo": {
+                    "name": "temperature-mcp",
+                    "version": "1.0.0"
+                }
             }
         }
 
-    # Tool execution
+    # --------------------------
+    # List Available Tools
+    # --------------------------
+    if method == "tools/list":
+
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "tools": [TEMPERATURE_TOOL]
+            }
+        }
+
+    # --------------------------
+    # Call Tool
+    # --------------------------
     if method == "tools/call":
 
         params = body.get("params", {})
-        name = params.get("name")
+        tool_name = params.get("name")
         arguments = params.get("arguments", {})
 
-        if name == "get_temperature":
+        if tool_name == "get_temperature":
 
             city = arguments.get("city")
-            temp = get_simulated_temperature(city)
+            temperature = get_simulated_temperature(city)
 
             return {
                 "jsonrpc": "2.0",
-                "id": req_id,
+                "id": request_id,
                 "result": {
                     "content": [
                         {
                             "type": "text",
-                            "text": f"The temperature in {city} is {temp}"
+                            "text": f"The temperature in {city} is {temperature}"
                         }
                     ]
                 }
             }
 
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": -32601,
+                "message": "Tool not found"
+            }
+        }
+
+    # --------------------------
+    # Unknown Method
+    # --------------------------
     return {
         "jsonrpc": "2.0",
-        "id": req_id,
+        "id": request_id,
         "error": {
             "code": -32601,
             "message": "Method not found"
         }
     }
+
+
+# ==========================================
+# Local Development Runner
+# ==========================================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )
