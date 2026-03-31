@@ -5,11 +5,11 @@ A Model Context Protocol (MCP) tool server built with Python and FastAPI, design
 ## Tool Details
 
 **1. `get_temperature`**
-* **Description**: Get the current simulated temperature of a city.
+* **Description**: Get the current live temperature of a city (requires `OWM_API_KEY`).
 * **Input**: JSON with a `city` string property.
 
 **2. `get_temperature_forecast`**
-* **Description**: Get the simulated temperature forecast for a city for the next 3 days.
+* **Description**: Get the live temperature forecast for a city for the next 3 days (requires `OWM_API_KEY`).
 * **Input**: JSON with a `city` string property.
 
 **3. `convert_temperature`**
@@ -41,7 +41,13 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-**4. Run the server**
+**4. Configure Environment Variables**
+Create a `.env` file in the root directory and add your OpenWeatherMap API key:
+```ini
+OWM_API_KEY=your_api_key_here
+```
+
+**5. Run the server**
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
@@ -51,7 +57,21 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 This server relies on standard `FastAPI` and `uvicorn`, making it natively compatible with platforms such as Render, Railway, or Vercel (via `vercel.json`).
 
 * **Render / Railway**: These platforms will automatically detect Python due to `requirements.txt` and you can use the start command `uvicorn main:app --host 0.0.0.0 --port $PORT` (Render/Railway use the `$PORT` environment variable).
-* **Vercel**: You may need a simple `vercel.json` file configuring `rewrites` to point all traffic to `main:app` as a Serverless Function.
+* **Vercel**: The project includes a `vercel.json` file. It is pre-configured to use the `@vercel/python` builder, meaning you can deploy it natively to Vercel without any extra configuration.
+
+## Testing
+
+A comprehensive test suite is provided in `test_main.py`. This tests the FastAPI endpoints, the MCP JSON-RPC protocol handling, and all tool execution paths.
+
+**1. Install test dependencies**
+```bash
+pip install pytest pytest-asyncio httpx
+```
+
+**2. Run the tests**
+```bash
+pytest test_main.py -v
+```
 
 ## Example Request
 
