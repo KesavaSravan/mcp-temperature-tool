@@ -1,49 +1,107 @@
 from fastapi import FastAPI, Request
 from typing import Dict
+import httpx
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(
     title="MCP Temperature Server",
-    description="Simple MCP server using FastAPI",
-    version="1.0.0"
+    description="Simple MCP server using FastAPI with live weather data",
+    version="2.0.0"
 )
 
 # ==========================================
-# Temperature Logic
+# Configuration
 # ==========================================
 
-def get_simulated_temperature(city: str) -> str:
-    mock_data = {
-        "hyderabad": "32°C",
-        "london": "15°C",
-        "new york": "22°C",
-        "tokyo": "18°C",
-        "sydney": "25°C",
-        "paris": "16°C",
-        "delhi": "30°C"
-    }
+OWM_API_KEY = os.getenv("OWM_API_KEY", "")
+OWM_BASE_URL = "https://api.openweathermap.org/data/2.5"
 
+
+# ==========================================
+# Temperature Logic (Live Data)
+# ==========================================
+
+async def get_live_temperature(city: str) -> str:
     if not city:
         return "Unknown"
 
-    return mock_data.get(city.strip().lower(), "20°C")
+    if not OWM_API_KEY:
+        return "Error: OWM_API_KEY environment variable not set."
 
-
-def get_temperature_forecast(city: str) -> str:
-    mock_data = {
-        "hyderabad": ["32°C", "33°C", "34°C"],
-        "london": ["15°C", "14°C", "15°C"],
-        "new york": ["22°C", "23°C", "20°C"],
-        "tokyo": ["18°C", "19°C", "21°C"],
-        "sydney": ["25°C", "26°C", "24°C"],
-        "paris": ["16°C", "15°C", "17°C"],
-        "delhi": ["30°C", "32°C", "33°C"]
+    url = f"{OWM_BASE_URL}/weather"
+    params = {
+        "q": city,
+        "appid": OWM_API_KEY,
+        "units": "metric"
     }
 
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                temp = data["main"]["temp"]
+                feels_like = data["main"]["feels_like"]
+                description = data["weather"][0]["description"].capitalize()
+                return f"{temp:.1f}°C (Feels like {feels_like:.1f}°C, {description})"
+            elif response.status_code == 404:
+                return f"City '{city}' not found."
+            elif response.status_code == 401:
+                return "Error: Invalid API key."
+            else:
+                return f"Error fetching data (HTTP {response.status_code})."
+        except httpx.RequestError as e:
+            return f"Network error: {str(e)}"
+
+
+async def get_live_forecast(city: str) -> str:
     if not city:
         return "Unknown"
 
-    forecast = mock_data.get(city.strip().lower(), ["20°C", "21°C", "20°C"])
-    return f"Next 3 days: {', '.join(forecast)}"
+    if not OWM_API_KEY:
+        return "Error: OWM_API_KEY environment variable not set."
+
+    # /forecast returns 5-day forecast in 3-hour steps; we pick one reading per day
+    url = f"{OWM_BASE_URL}/forecast"
+    params = {
+        "q": city,
+        "appid": OWM_API_KEY,
+        "units": "metric",
+        "cnt": 24   # 24 × 3h = 72h (3 days)
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                entries = data["list"]
+
+                # Pick one entry per calendar day (skip today)
+                seen_dates = set()
+                daily = []
+                for entry in entries:
+                    date = entry["dt_txt"].split(" ")[0]
+                    if date not in seen_dates:
+                        seen_dates.add(date)
+                        temp = entry["main"]["temp"]
+                        desc = entry["weather"][0]["description"].capitalize()
+                        daily.append(f"{date}: {temp:.1f}°C ({desc})")
+                    if len(daily) == 3:
+                        break
+
+                return "Next 3 days:\n" + "\n".join(daily) if daily else "No forecast data available."
+            elif response.status_code == 404:
+                return f"City '{city}' not found."
+            elif response.status_code == 401:
+                return "Error: Invalid API key."
+            else:
+                return f"Error fetching forecast (HTTP {response.status_code})."
+        except httpx.RequestError as e:
+            return f"Network error: {str(e)}"
 
 
 def convert_temperature(value: float, from_unit: str, to_unit: str) -> str:
@@ -61,12 +119,12 @@ def convert_temperature(value: float, from_unit: str, to_unit: str) -> str:
 
 
 # ==========================================
-# MCP Tool Definition
+# MCP Tool Definitions
 # ==========================================
 
 TEMPERATURE_TOOL = {
     "name": "get_temperature",
-    "description": "Get the current temperature of a city",
+    "description": "Get the current live temperature of a city using OpenWeatherMap",
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -81,7 +139,7 @@ TEMPERATURE_TOOL = {
 
 FORECAST_TOOL = {
     "name": "get_temperature_forecast",
-    "description": "Get the temperature forecast for a city for the next 3 days",
+    "description": "Get the live temperature forecast for a city for the next 3 days",
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -126,7 +184,8 @@ CONVERT_TOOL = {
 async def health():
     return {
         "status": "ok",
-        "service": "temperature-mcp"
+        "service": "temperature-mcp",
+        "live_data": bool(OWM_API_KEY)
     }
 
 
@@ -138,7 +197,6 @@ async def health():
 async def mcp_rpc(request: Request):
 
     body: Dict = await request.json()
-
     method = body.get("method")
     request_id = body.get("id")
 
@@ -146,18 +204,15 @@ async def mcp_rpc(request: Request):
     # MCP Initialization
     # --------------------------
     if method == "initialize":
-
         return {
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
+                "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "temperature-mcp",
-                    "version": "1.0.0"
+                    "version": "2.0.0"
                 }
             }
         }
@@ -166,7 +221,6 @@ async def mcp_rpc(request: Request):
     # List Available Tools
     # --------------------------
     if method == "tools/list":
-
         return {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -185,68 +239,44 @@ async def mcp_rpc(request: Request):
         arguments = params.get("arguments", {})
 
         if tool_name == "get_temperature":
-
             city = arguments.get("city")
-            temperature = get_simulated_temperature(city)
-
+            temperature = await get_live_temperature(city)
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"The temperature in {city} is {temperature}"
-                        }
-                    ]
+                    "content": [{"type": "text", "text": f"The temperature in {city} is {temperature}"}]
                 }
             }
 
         elif tool_name == "get_temperature_forecast":
-
             city = arguments.get("city")
-            forecast = get_temperature_forecast(city)
-
+            forecast = await get_live_forecast(city)
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"The temperature forecast for {city} is: {forecast}"
-                        }
-                    ]
+                    "content": [{"type": "text", "text": f"Temperature forecast for {city}:\n{forecast}"}]
                 }
             }
 
         elif tool_name == "convert_temperature":
-
             value = arguments.get("value")
             from_unit = arguments.get("from_unit")
             to_unit = arguments.get("to_unit")
             result_temp = convert_temperature(value, from_unit, to_unit)
-
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"The converted temperature is {result_temp}"
-                        }
-                    ]
+                    "content": [{"type": "text", "text": f"The converted temperature is {result_temp}"}]
                 }
             }
 
         return {
             "jsonrpc": "2.0",
             "id": request_id,
-            "error": {
-                "code": -32601,
-                "message": "Tool not found"
-            }
+            "error": {"code": -32601, "message": "Tool not found"}
         }
 
     # --------------------------
@@ -255,10 +285,7 @@ async def mcp_rpc(request: Request):
     return {
         "jsonrpc": "2.0",
         "id": request_id,
-        "error": {
-            "code": -32601,
-            "message": "Method not found"
-        }
+        "error": {"code": -32601, "message": "Method not found"}
     }
 
 
@@ -268,10 +295,4 @@ async def mcp_rpc(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
