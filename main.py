@@ -177,6 +177,55 @@ CONVERT_TOOL = {
 
 
 # ==========================================
+# Root Endpoint (Server Info)
+# ==========================================
+
+@app.get("/")
+async def root():
+    return {
+        "service": "MCP Temperature Server",
+        "version": "2.0.0",
+        "status": "running",
+        "live_data": bool(OWM_API_KEY),
+        "data_source": "OpenWeatherMap API" if OWM_API_KEY else "No API key set — add OWM_API_KEY to .env",
+        "endpoints": {
+            "GET  /": "Server info (this page)",
+            "GET  /health": "Health check",
+            "POST /": "MCP JSON-RPC endpoint"
+        },
+        "available_tools": [
+            {
+                "name": "get_temperature",
+                "description": "Get current live temperature of a city",
+                "input": {"city": "string"}
+            },
+            {
+                "name": "get_temperature_forecast",
+                "description": "Get 3-day temperature forecast for a city",
+                "input": {"city": "string"}
+            },
+            {
+                "name": "convert_temperature",
+                "description": "Convert temperature between Celsius and Fahrenheit",
+                "input": {"value": "number", "from_unit": "C or F", "to_unit": "C or F"}
+            }
+        ],
+        "example_request": {
+            "method": "POST /",
+            "body": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_temperature",
+                    "arguments": {"city": "Hyderabad"}
+                }
+            }
+        }
+    }
+
+
+# ==========================================
 # Health Endpoint
 # ==========================================
 
